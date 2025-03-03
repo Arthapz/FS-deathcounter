@@ -108,17 +108,22 @@ auto overlayThread(std::stop_token token, std::atomic_bool &redraw, std::atomic_
     ShowWindow(hwnd, SW_SHOWNORMAL);
         
     for(;;) {
-      auto msg = MSG{};
-      while (GetMessage(&msg, hwnd, 0, 0) > 0){
-          TranslateMessage(&msg);
-          DispatchMessage(&msg);
+      auto message = MSG {};
+      ZeroMemory(&message, sizeof(MSG));
+
+      while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+          TranslateMessage(&message);
+          DispatchMessageW(&message);
       }
+      
       if(token.stop_requested()) {
          return;
       }
 
       if(redraw.load()) {
-        InvalidateRect(hwnd, nullptr, true);
+        auto rect = RECT{};
+        GetClientRect(hwnd, &rect);
+        InvalidateRect(hwnd, &rect, true);
         UpdateWindow(hwnd);
         redraw.store(false);
       }
