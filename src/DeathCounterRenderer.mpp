@@ -1,0 +1,173 @@
+module;
+
+#include <windows.h>
+
+export module DeathCounterRenderer;
+
+import std;
+
+import Error;
+import GameProcess;
+import Constants;
+import frozen;
+import Win32Utils;
+import MemoryUtils;
+
+using namespace std::literals;
+
+namespace RendererError {
+  inline auto cantInitDummyWindow() noexcept -> decltype(auto) {
+      const auto error = GetLastError();
+      return std::unexpected<Error> { std::in_place,
+                                      std::format("Can't init Window ({}) {}", error, formatMessage(error)) };
+  }
+}
+
+LRESULT CALLBACK wndProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) noexcept {
+    switch(message) {
+      case WM_CREATE: {
+        SetWindowLongPtr(hwnd, GWLP_USERDATA, std::bit_cast<LONG_PTR>(std::bit_cast<CREATESTRUCT*>(lparam)->lpCreateParams));
+        SetWindowLong(hwnd, GWL_EXSTYLE, GetWindowLong(hwnd, GWL_EXSTYLE) | WS_EX_LAYERED);
+        SetLayeredWindowAttributes(hwnd, RGB(255,255,255), 0, LWA_COLORKEY);
+        SetWindowPos(hwnd, HWND_TOPMOST, 0,0,0,0, SWP_NOMOVE | SWP_NOSIZE);
+      break;
+      }
+      case WM_PAINT: {
+        auto &death_counter_ = *std::bit_cast<std::atomic_int*>(GetWindowLongPtr(hwnd, GWLP_USERDATA));
+        const auto death_counter = std::format("Death(s): {}", death_counter_.load());
+        
+        auto ps = PAINTSTRUCT{};
+        auto hdc = BeginPaint(hwnd, &ps);
+
+        auto font = CreateFont(24, 0, 0, 0, 700,
+                               false, false, false, ANSI_CHARSET,
+                               OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS, NONANTIALIASED_QUALITY, VARIABLE_PITCH, nullptr);
+        SelectObject(hdc, font);
+
+        SetTextColor(hdc, 0x0000FFFF);
+        TextOut(hdc, 0, 0, TEXT(std::data(death_counter)), std::size(death_counter));
+
+        EndPaint(hwnd, &ps);
+        ReleaseDC(hwnd, hdc);
+      break;
+      }
+        
+      default:
+          return DefWindowProc(hwnd, message, wparam, lparam);
+    }
+
+    return 0;
+}
+
+auto makeWindow(std::atomic_int &death_counter) noexcept -> Expected<XHWND> {
+    std::println("\nOpening death counter Window...");
+    auto wc = WNDCLASSEX{};
+    ZeroMemory(&wc, sizeof(WNDCLASSEX));
+    wc.cbSize = sizeof(WNDCLASSEX);
+    wc.lpfnWndProc = wndProc;
+    wc.lpszClassName = TEXT("DeathCounterWindow");
+    RegisterClassExA(&wc);
+
+    auto create_struct = CREATESTRUCT{};
+    ZeroMemory(&create_struct, sizeof(CREATESTRUCT));
+    create_struct.lpCreateParams = &death_counter;
+
+    auto hinstance = GetModuleHandle(nullptr);
+    auto window = XHWND { CreateWindowExA(0,
+                                          wc.lpszClassName,
+                                          TEXT("DeathCounter"),
+                                          WS_POPUP,
+                                          10,
+                                          20,
+                                          200,
+                                          40,
+                                          nullptr,
+                                          nullptr,
+                                          hinstance,
+                                          &death_counter) };
+
+    UnregisterClass(wc.lpszClassName, hinstance);
+
+    if(window.get() == nullptr) return RendererError::cantInitDummyWindow();
+    std::println("Ok.");
+
+    return window;
+}
+  
+auto overlayThread(std::stop_token token, std::atomic_bool &redraw, std::atomic_int &death_counter) noexcept -> void {
+    setThreadLangID();
+    
+    auto result = makeWindow(death_counter);
+    if(not result) {
+      std::println("{}", result.error().description);
+      return;
+    }
+
+    auto window = std::move(result).value();
+    auto hwnd = std::bit_cast<HWND>(window.get());
+    ShowWindow(hwnd, SW_SHOWNORMAL);
+        
+    for(;;) {
+      auto msg = MSG{};
+      while (GetMessage(&msg, hwnd, 0, 0) > 0){
+          TranslateMessage(&msg);
+          DispatchMessage(&msg);
+      }
+      if(token.stop_requested()) {
+         return;
+      }
+
+      if(redraw.load()) {
+        InvalidateRect(hwnd, nullptr, true);
+        UpdateWindow(hwnd);
+        redraw.store(false);
+      }
+    }
+}
+
+export auto renderDeathCounter(ProcessCtx &&ctx) noexcept -> std::expected<int, Error> {
+  auto death_counter = std::atomic_int{0};
+  auto redraw = std::atomic_bool{false};
+
+  const auto &offsets = ADDRESS_MAP.at(frozen::string{ctx.name});
+
+  auto overlay_thread = std::optional<std::jthread>{};
+  if(ctx.disable_overlay) std::println("Overlay Disabled!i\n");
+  else {
+    std::println("Starting overlay thread...");
+
+    overlay_thread = std::jthread { std::bind_back(overlayThread, std::ref(redraw), std::ref(death_counter)) };
+
+    std::println("Ok!\n");
+  }
+  
+  std::println("Base address: {:#x}", ctx.base_address);
+  for(;;) {
+    if(WaitForSingleObject(ctx.handle.get(), 0) == WAIT_OBJECT_0) {
+        std::println("Process terminated!");
+        break;
+    }
+
+    const auto new_value = peekMemory(ctx.handle.get(), ctx.base_address, offsets);
+    if(not new_value.has_value()) return std::unexpected{ std::move(new_value).error() };
+    
+    if(*new_value != std::nullopt and **new_value != death_counter) {
+      death_counter.store(**new_value);
+      redraw.store(true);
+      std::println("Death(s): {}", death_counter.load());
+    }
+
+    std::this_thread::sleep_for(500ms);
+  }
+
+  if(overlay_thread) {
+    std::println("\nStopping overlay thread...");
+    
+    overlay_thread->request_stop();
+    overlay_thread->join();
+    
+    std::println("Ok!");
+  }
+
+  return 0;
+}

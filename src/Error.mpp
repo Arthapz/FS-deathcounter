@@ -1,0 +1,13 @@
+export module Error;
+
+import std;
+
+export {
+  struct Error {
+    std::string description;
+    bool show_help = false;
+  };
+
+  template <typename T>
+  using Expected = std::expected<T, Error>;
+}

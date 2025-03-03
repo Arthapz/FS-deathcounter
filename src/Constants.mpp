@@ -1,0 +1,19 @@
+export module Constants;
+
+import std;
+import frozen;
+
+using namespace std::literals;
+
+export {
+     inline constexpr auto HELP_STRING = "fsdeathcounter 1.0\nArthur LAURENT <arthur.laurent4@gmail.com>\nA from software games death counter\n\nUSAGE:\nfsdeathcounter [FLAGS]\n\nFLAGS:\n    -h,--help          Print help information\n    --cli           Disable in-game overlay"sv;
+
+    using Offsets = std::vector<std::ptrdiff_t>;
+    inline const auto ADDRESS_MAP = frozen::make_unordered_map<frozen::string, Offsets>({
+        {"DarkSoulsRemastered.exe", Offsets{0x1C8A530, 0x98}},
+        {"DarkSoulsII.exe", Offsets{0x16148F0, 0xD0, 0x490, 0x104}},
+        {"DarkSoulsIII.exe", Offsets{0x47572B8, 0x98}},
+        {"Sekiro.exe", Offsets{0x3D5AAC0, 0x90}},
+        {"EldenRing.exe", Offsets{0x3D5DF38, 0x94}},
+    });
+}

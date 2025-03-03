@@ -1,0 +1,35 @@
+module;
+
+#include <windows.h>
+
+export module Win32Utils;
+
+import std;
+
+export {
+  inline constexpr auto HANDLE_DELETER = 
+      []( void *h ) noexcept { if(h != INVALID_HANDLE_VALUE) CloseHandle( std::bit_cast<HANDLE>(h) ); };
+  inline constexpr auto HWND_DELETER = 
+      []( void *h ) noexcept { if(h != nullptr) DestroyWindow( std::bit_cast<HWND>(h) ); };
+  using XHANDLE = std::unique_ptr<void, std::remove_cvref_t<decltype(HANDLE_DELETER)>>;
+  using XHWND = std::unique_ptr<void, std::remove_cvref_t<decltype(HWND_DELETER)>>;
+
+  inline auto setThreadLangID() -> void {
+    static constexpr auto LANG_ID = MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US);
+    
+    SetThreadLocale(LANG_ID);
+  }
+
+  inline auto formatMessage(auto &&error) noexcept -> std::string {
+      static constexpr auto LANG_ID = MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US);
+  
+      auto message = std::string{};
+      message.resize(255);
+      FormatMessage(FORMAT_MESSAGE_FROM_SYSTEM, nullptr, error,
+                    LANG_ID, std::data(message), 255, nullptr);
+
+      message.shrink_to_fit();
+      return message;
+  }
+}
+  

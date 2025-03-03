@@ -1,0 +1,70 @@
+module;
+
+#include <windows.h>
+
+export module MemoryUtils;
+
+import std;
+
+import Error;
+import Win32Utils;
+
+namespace MemoryError {
+  inline auto cantReadAtAddress(std::uintptr_t address) noexcept -> decltype(auto) {
+      const auto error = GetLastError();
+      return std::unexpected<Error> { std::in_place,
+                                      std::format("Could not read game memory at {:#x}: ({}) {}", address, error, formatMessage(error)) };
+  }
+}
+
+export {
+  inline constexpr auto operator""_b(unsigned long long i) noexcept -> std::byte {
+    return static_cast<std::byte>(i);
+  }
+  
+  auto peekMemory(HANDLE handle, std::uintptr_t base_address, std::span<const std::ptrdiff_t> offsets) -> Expected<std::optional<std::uint32_t>> {
+    auto peek_at = base_address;
+
+    auto buffer = std::vector<std::byte>{};
+    buffer.resize(sizeof(std::uint64_t), std::byte{0});
+
+    for(auto&& offset : offsets) {
+        if(peek_at == 0) return std::nullopt;
+
+        peek_at += offset;
+
+        auto read = std::size_t{0};
+        if(not ReadProcessMemory(handle, std::bit_cast<LPCVOID>(peek_at), std::data(buffer), std::size(buffer) * sizeof(std::byte), &read)) {
+            return MemoryError::cantReadAtAddress(peek_at);
+        }
+
+        peek_at = *std::bit_cast<std::uintptr_t*>(std::data(buffer));
+    }
+
+    peek_at &= 0x0000ffff;
+    return static_cast<std::uint32_t>(peek_at);
+  }
+    
+  auto toggleMemoryProtection(bool enable, std::uintptr_t address, std::size_t size) noexcept {
+        auto history = std::unordered_map<std::uintptr_t, DWORD>{};
+
+        if(auto it = history.find(address); enable and it != std::ranges::end(history)) {
+            VirtualProtect(std::bit_cast<void*>(address), size, it->second, &it->second);
+            history.erase(it);
+        } else if(not enable and history.find(address) == std::ranges::end(history)) {
+            auto old = DWORD{0};
+            VirtualProtect(std::bit_cast<void*>(address), size, PAGE_EXECUTE_READWRITE, &old);
+            history.emplace(address, old);
+        }
+  }
+    
+  auto memcopy(std::uintptr_t destination, std::uintptr_t source, std::size_t byte_count) {
+      toggleMemoryProtection(false, destination, byte_count);
+      toggleMemoryProtection(false, source, byte_count);
+
+      std::memcpy(std::bit_cast<void*>(destination), std::bit_cast<void*>(source), byte_count);
+      
+      toggleMemoryProtection(true, destination, byte_count);
+      toggleMemoryProtection(true, source, byte_count);
+  }
+}
